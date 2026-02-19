@@ -191,7 +191,7 @@ class MopaVisionTower(nn.Module):
         )
         
         motion_features = self.feature_select(motion_forward_outs).to(motion_data.dtype)
-        import pdb; pdb.set_trace()
+        
         return motion_features
     
     # ========================================================================

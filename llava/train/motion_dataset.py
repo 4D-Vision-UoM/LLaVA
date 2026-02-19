@@ -109,6 +109,7 @@ class MotionLazySupervisedDataset(Dataset):
         report_files = sorted(list(split_dir.rglob('report.json')))
         
         logger.info(f"Found {len(report_files)} sequences in {split_dir}")
+        print(f"Found {len(report_files)} sequences in {split_dir}")
         
         samples = []
         for report_path in report_files:
@@ -152,40 +153,32 @@ class MotionLazySupervisedDataset(Dataset):
             if not qa_pairs:
                 continue
             
-            # Create a sample for each Q&A pair
+            # Validate Q&A pairs
+            valid_qa_pairs = []
             for qa_pair in qa_pairs:
                 question = qa_pair.get('question', '')
                 answer = qa_pair.get('answer', '')
-                qa_type = qa_pair.get('type', 'Unknown')
-                
-                if not question or not answer:
-                    continue
-                
-                # Create LLaVA conversation format
-                conversations = [
-                    {
-                        "from": "human",
-                        "value": f"<image>\n{question}"
-                    },
-                    {
-                        "from": "gpt",
-                        "value": answer
-                    }
-                ]
-                
-                # Create sample in LLaVA format
-                sample = {
-                    "id": f"{seq_dir.name}_{qa_type}_{len(samples)}",
-                    "motion": str(seq_dir),  # Path to sequence directory
-                    "conversations": conversations,
-                    "frames": frames,
-                    "total_frames": len(frames),
-                    "qa_type": qa_type
-                }
-                
-                samples.append(sample)
+                if question and answer:
+                    valid_qa_pairs.append(qa_pair)
+            
+            if not valid_qa_pairs:
+                continue
+            
+            # Create ONE sample per sequence, storing all Q&A pairs
+            # Q&A selection happens at runtime in __getitem__
+            sample = {
+                "id": seq_dir.name,
+                "motion": str(seq_dir),  # Path to sequence directory
+                "qa_pairs": valid_qa_pairs,  # Store all Q&A pairs
+                "frames": frames,
+                "total_frames": len(frames),
+            }
+            
+            samples.append(sample)
         
-        logger.info(f"Created {len(samples)} training samples from {len(report_files)} sequences")
+        # Calculate total Q&A pairs for logging
+        total_qa_pairs = sum(len(s['qa_pairs']) for s in samples)
+        logger.info(f"Created {len(samples)} sequences with {total_qa_pairs} total Q&A pairs from {len(report_files)} report files")
         
         if len(samples) == 0:
             logger.error(f"No samples found in {split_dir}")
@@ -193,7 +186,7 @@ class MotionLazySupervisedDataset(Dataset):
             raise ValueError(f"No training samples found in {split_dir}. "
                            "Please check that the data directory contains sequences with report.json "
                            "and *_qna.json files.")
-        
+        print(f"✓ Discovered {len(samples)} sequences with {total_qa_pairs} Q&A pairs (train: random selection, test: first Q&A)")
         return samples
 
     def _load_pcd(self, pcd_path: str) -> np.ndarray:
@@ -391,14 +384,29 @@ class MotionLazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             motion_tokens = 197 if 'motion' in sample else 0  # Approx tokens from MoPa
-            length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + motion_tokens)
+            # Estimate length using first Q&A pair if qa_pairs exist
+            if 'qa_pairs' in sample:
+                qa_pair = sample['qa_pairs'][0]
+                text_len = len(qa_pair.get('question', '').split()) + len(qa_pair.get('answer', '').split())
+            elif 'conversations' in sample:
+                text_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
+            else:
+                text_len = 0
+            length_list.append(text_len + motion_tokens)
         return length_list
 
     @property
     def modality_lengths(self):
         length_list = []
         for sample in self.list_data_dict:
-            cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
+            # Estimate length using first Q&A pair if qa_pairs exist
+            if 'qa_pairs' in sample:
+                qa_pair = sample['qa_pairs'][0]
+                cur_len = len(qa_pair.get('question', '').split()) + len(qa_pair.get('answer', '').split())
+            elif 'conversations' in sample:
+                cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
+            else:
+                cur_len = 0
             cur_len = cur_len if 'motion' in sample else -cur_len
             length_list.append(cur_len)
         return length_list
@@ -406,11 +414,40 @@ class MotionLazySupervisedDataset(Dataset):
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         """
         Returns a training sample in LLaVA format.
+        
+        For training: randomly selects one Q&A pair per sequence
+        For testing: always selects the first Q&A pair for consistency
         """
-        sources = self.list_data_dict[i]
-        if isinstance(i, int):
-            sources = [sources]
-        assert len(sources) == 1, "Don't know why it is wrapped to a list"
+        sample = self.list_data_dict[i]
+        
+        # Select Q&A pair based on split
+        if 'qa_pairs' in sample:
+            qa_pairs = sample['qa_pairs']
+            if self.split == 'train':
+                # Random selection for training (different each epoch)
+                qa_pair = random.choice(qa_pairs)
+            else:
+                # First Q&A for test/val (consistent evaluation)
+                qa_pair = qa_pairs[0]
+            
+            # Create conversations from selected Q&A pair
+            question = qa_pair.get('question', '')
+            answer = qa_pair.get('answer', '')
+            conversations = [
+                {
+                    "from": "human",
+                    "value": f"<image>\n{question}"
+                },
+                {
+                    "from": "gpt",
+                    "value": answer
+                }
+            ]
+            # Temporarily add conversations to sample
+            sample = copy.deepcopy(sample)
+            sample['conversations'] = conversations
+        
+        sources = [sample]
         
         # Load motion sequence if present
         if 'motion' in sources[0]:
@@ -473,10 +510,19 @@ def make_motion_supervised_data_module(tokenizer, data_args) -> Dict:
         data_split='train',
     )
     
+    eval_dataset = MotionLazySupervisedDataset(
+        data_path=data_args.data_path,
+        tokenizer=tokenizer,
+        data_args=data_args,
+        num_frames=32,
+        num_points=2048,
+        data_split='test',
+    )
+    
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     
     return dict(
         train_dataset=train_dataset,
-        eval_dataset=None,
+        eval_dataset=eval_dataset,
         data_collator=data_collator
     )
