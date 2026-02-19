@@ -6,7 +6,8 @@
 set -e
 
 echo "========================================="
-echo "LLaVA Dummy Data Fine-tuning Test"
+echo "LLaVA Projection Layer Fine-tuning Test"
+echo "(Text and Vision frozen - Projection only)"
 echo "========================================="
 
 # Get script directory
@@ -15,7 +16,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Set paths
 DATA_PATH="$SCRIPT_DIR/playground/data/dummy_finetune_data.json"
 IMAGE_FOLDER="$SCRIPT_DIR/images"
-OUTPUT_DIR="$SCRIPT_DIR/checkpoints/test-finetune-dummy"
+OUTPUT_DIR="$SCRIPT_DIR/checkpoints/test-finetune-projection-only"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
@@ -25,7 +26,7 @@ echo "Image folder: $IMAGE_FOLDER"
 echo "Output directory: $OUTPUT_DIR"
 echo "========================================="
 
-# Run training with minimal configuration and LoRA for memory efficiency
+# Run training with projection layer only (freeze LLM and vision model)
 python -m llava.train.train \
     --model_name_or_path liuhaotian/llava-v1.5-7b \
     --version v1 \
@@ -38,17 +39,19 @@ python -m llava.train.train \
     --mm_use_im_patch_token False \
     --image_aspect_ratio pad \
     --group_by_modality_length True \
+    --freeze_backbone True \
+    --tune_mm_mlp_adapter True \
     --fp16 True \
     --output_dir "$OUTPUT_DIR" \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 1 \
+    --per_device_train_batch_size 2 \
+    --per_device_eval_batch_size 2 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy no \
     --save_strategy steps \
     --save_steps 50 \
     --save_total_limit 1 \
-    --learning_rate 2e-5 \
+    --learning_rate 1e-3 \
     --weight_decay 0.0 \
     --warmup_ratio 0.03 \
     --lr_scheduler_type cosine \
@@ -58,12 +61,7 @@ python -m llava.train.train \
     --gradient_checkpointing True \
     --dataloader_num_workers 2 \
     --lazy_preprocess True \
-    --report_to none \
-    --lora_enable True \
-    --lora_r 8 \
-    --lora_alpha 16 \
-    --lora_dropout 0.05 \
-    --lora_bias none
+    --report_to none
 
 echo "========================================="
 echo "Training completed!"

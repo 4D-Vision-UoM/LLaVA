@@ -13,13 +13,14 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(script_dir, "playground/data/dummy_finetune_data.json")
     image_folder = os.path.join(script_dir, "images")
-    output_dir = os.path.join(script_dir, "checkpoints/test-finetune-simple")
+    output_dir = os.path.join(script_dir, "checkpoints/test-finetune-projection-only")
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
     
     print("=" * 80)
-    print("Simple LLaVA Fine-tuning Test")
+    print("Simple LLaVA Projection Layer Fine-tuning Test")
+    print("(Text and Vision models frozen, only training projection layer)")
     print("=" * 80)
     print(f"Data path: {data_path}")
     print(f"Image folder: {image_folder}")
@@ -27,6 +28,10 @@ def main():
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+    print("\nTraining configuration:")
+    print("  - Vision model: FROZEN")
+    print("  - Text model (LLM): FROZEN")
+    print("  - Projection layer: TRAINABLE (tune_mm_mlp_adapter=True)")
     print("=" * 80)
     
     # Prepare training arguments as a list (simulating command line arguments)
@@ -42,18 +47,21 @@ def main():
         "--mm_use_im_patch_token", "False",
         "--image_aspect_ratio", "pad",
         "--group_by_modality_length", "True",
+        # Freeze backbone (LLM) and only train projection layers
+        "--freeze_backbone", "True",
+        "--tune_mm_mlp_adapter", "True",
         "--bf16", "True" if torch.cuda.is_bf16_supported() else "False",
         "--fp16", "False" if torch.cuda.is_bf16_supported() else "True",
         "--output_dir", output_dir,
         "--num_train_epochs", "1",
-        "--per_device_train_batch_size", "1",
-        "--per_device_eval_batch_size", "1",
+        "--per_device_train_batch_size", "2",  # Can use larger batch size since less memory needed
+        "--per_device_eval_batch_size", "2",
         "--gradient_accumulation_steps", "2",
         "--evaluation_strategy", "no",
         "--save_strategy", "steps",
         "--save_steps", "50",
         "--save_total_limit", "1",
-        "--learning_rate", "2e-5",
+        "--learning_rate", "1e-3",  # Higher learning rate for projection layer training
         "--weight_decay", "0.0",
         "--warmup_ratio", "0.03",
         "--lr_scheduler_type", "cosine",
@@ -66,14 +74,8 @@ def main():
         "--report_to", "none",
     ]
     
-    # Enable LoRA fine-tuning for memory efficiency
-    training_args.extend([
-        "--lora_enable", "True",
-        "--lora_r", "8",
-        "--lora_alpha", "16",
-        "--lora_dropout", "0.05",
-        "--lora_bias", "none",
-    ])
+    # Note: No LoRA needed since we're only training the projection layer
+    # The vision tower and language model are frozen
     
     print("\nStarting training...")
     print("=" * 80)
