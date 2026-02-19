@@ -30,7 +30,6 @@ class LlavaMetaModel:
 
     def __init__(self, config):
         super(LlavaMetaModel, self).__init__(config)
-
         if hasattr(config, "mm_vision_tower"):
             self.vision_tower = build_vision_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
@@ -53,9 +52,26 @@ class LlavaMetaModel:
         pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
         mm_patch_merge_type = model_args.mm_patch_merge_type
 
+#######################################################################################
+        # need to rebuild as default config have clip vision tower path
+        existing_tower = self.get_vision_tower()
+        needs_rebuild = False
+        
+        if existing_tower is None:
+            needs_rebuild = True
+        else:
+            # Check if the vision tower type has changed by comparing actual tower name
+            existing_tower_name = getattr(existing_tower, 'vision_tower_name', '')
+            if existing_tower_name != vision_tower:
+                needs_rebuild = True
+        
+        # Update config with the new vision tower path
         self.config.mm_vision_tower = vision_tower
-
-        if self.get_vision_tower() is None:
+        
+#######################################################################################        
+        
+        if needs_rebuild:
+            print(f"Loading vision tower: {vision_tower}")
             vision_tower = build_vision_tower(model_args)
 
             if fsdp is not None and len(fsdp) > 0:
@@ -76,14 +92,19 @@ class LlavaMetaModel:
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
 
-        if getattr(self, 'mm_projector', None) is None:
+        # Rebuild projector if vision tower was rebuilt (ensures matching dimensions)
+        if needs_rebuild or getattr(self, 'mm_projector', None) is None:
+            print(f"Building projector: {vision_tower.hidden_size} -> {self.config.hidden_size}")
             self.mm_projector = build_vision_projector(self.config)
+            for p in self.mm_projector.parameters():
+                p.requires_grad = True
 
             if 'unpad' in mm_patch_merge_type:
                 embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
                 self.image_newline = nn.Parameter(
                     torch.randn(self.config.hidden_size, dtype=self.dtype) * embed_std
                 )
+#######################################################################################                
         else:
             # In case it is frozen by LoRA
             for p in self.mm_projector.parameters():

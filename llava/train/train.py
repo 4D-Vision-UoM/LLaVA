@@ -74,6 +74,8 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
+    use_motion_data: bool = field(default=True, 
+                                   metadata={"help": "Use motion sequences instead of images"})
 
 
 @dataclass
@@ -956,8 +958,15 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                              data_args=data_args)
+    # Use motion dataset if specified
+    if data_args.use_motion_data:
+        from llava.train.motion_dataset import make_motion_supervised_data_module
+        data_module = make_motion_supervised_data_module(tokenizer=tokenizer,
+                                                          data_args=data_args)
+    else:
+        data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                                  data_args=data_args)
+    
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
