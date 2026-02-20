@@ -1,4 +1,4 @@
-"""Quick debug script to check model generation"""
+"""Compare model performance with real vs random motion data"""
 import torch
 import sys
 import json
@@ -14,7 +14,7 @@ from llava.train.motion_dataset import MotionLazySupervisedDataset
 from transformers import AutoConfig
 
 # Load model
-model_path = "checkpoints/llava-mopa-projection_bad_model"
+model_path = "checkpoints/llava-mopa-projection_10_epoch"
 model_base = "liuhaotian/llava-v1.5-7b"
 
 print("Loading tokenizer...")
@@ -48,7 +48,6 @@ model.get_model().initialize_vision_modules(model_args=model_args, fsdp=None)
 print("Loading projector weights...")
 mm_projector_weights = torch.load(f"{model_path}/mm_projector.bin", map_location='cpu')
 print(f"Found {len(mm_projector_weights)} weight tensors")
-print(f"Keys: {list(mm_projector_weights.keys())[:5]}")
 
 mm_projector_weights_filtered = {
     k.replace('model.mm_projector.', 'mm_projector.'): v 
@@ -68,7 +67,7 @@ for p in model.get_model().mm_projector.parameters():
 
 print("✓ Model loaded\n")
 
-# Load one test sample
+# Load test dataset
 class DataArgs:
     def __init__(self):
         self.is_multimodal = True
@@ -88,7 +87,7 @@ test_dataset = MotionLazySupervisedDataset(
 print(f"Loaded {len(test_dataset)} test samples\n")
 
 # Prepare output file
-output_file = f"eval_motion_vqa_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+output_file = f"eval_motion_vqa_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 print(f"Results will be saved to: {output_file}\n")
 
 results = []
@@ -97,13 +96,16 @@ results = []
 for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating samples"):
     sample = test_dataset.list_data_dict[sample_idx]
     
-    # Load motion once per sample
+    # Load REAL motion
     motion_info = {
         'frames': sample['frames'],
         'total_frames': sample['total_frames']
     }
-    motion_tensor = test_dataset._load_motion_sequence(motion_info)
-    motion_tensor = motion_tensor.unsqueeze(0).half().cuda()
+    real_motion_tensor = test_dataset._load_motion_sequence(motion_info)
+    real_motion_tensor = real_motion_tensor.unsqueeze(0).half().cuda()
+    
+    # Create RANDOM motion with same shape
+    random_motion_tensor = torch.randn_like(real_motion_tensor)
     
     # Process all QA pairs for this sample
     for qa_idx, qa_pair in enumerate(sample['qa_pairs']):
@@ -117,31 +119,40 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
         
-        # replace motion token with some random token for testing
-        # motion_tensor = torch.randn(1, 32, 2048, 9).half().cuda()  # Random motion data for testing
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-
-        # Generate
+        
+        # Generate with REAL motion
         with torch.inference_mode():
-            output_ids = model.generate(
+            output_ids_real = model.generate(
                 input_ids,
-                images=motion_tensor,
+                images=real_motion_tensor,
                 do_sample=False,
                 max_new_tokens=128,
                 use_cache=True,
             )
+        prediction_real = tokenizer.decode(output_ids_real[0], skip_special_tokens=True).strip()
         
-        # Decode generated text (output_ids already contains only generated tokens)
-        generated_text = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+        # Generate with RANDOM motion
+        with torch.inference_mode():
+            output_ids_random = model.generate(
+                input_ids,
+                images=random_motion_tensor,
+                do_sample=False,
+                max_new_tokens=128,
+                use_cache=True,
+            )
+        prediction_random = tokenizer.decode(output_ids_random[0], skip_special_tokens=True).strip()
         
-        # Store result
+        # Store result with both predictions
         result = {
             'sample_idx': sample_idx,
             'qa_idx': qa_idx,
             'motion_id': sample.get('id', f"sample_{sample_idx}"),
             'question': question,
             'ground_truth': answer,
-            'prediction': generated_text,
+            'prediction_real_motion': prediction_real,
+            'prediction_random_motion': prediction_random,
+            'predictions_match': prediction_real == prediction_random,
             'total_frames': sample['total_frames']
         }
         results.append(result)
@@ -154,6 +165,22 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
     if (sample_idx + 1) % 10 == 0:
         torch.cuda.empty_cache()
 
+# Calculate statistics
+total = len(results)
+matching = sum(1 for r in results if r['predictions_match'])
+different = total - matching
+
 print(f"\n✓ Evaluation complete!")
-print(f"✓ Processed {len(results)} QA pairs from {len(test_dataset.list_data_dict)} samples")
-print(f"✓ Results saved to: {output_file}")
+print(f"✓ Processed {total} QA pairs from {len(test_dataset.list_data_dict)} samples")
+print(f"\n📊 Statistics:")
+print(f"   - Predictions identical (real vs random): {matching}/{total} ({100*matching/total:.1f}%)")
+print(f"   - Predictions different (real vs random): {different}/{total} ({100*different/total:.1f}%)")
+print(f"\n✓ Results saved to: {output_file}")
+
+if matching > total * 0.8:
+    print(f"\n⚠️  WARNING: {100*matching/total:.1f}% of predictions are identical!")
+    print("   This suggests the model is NOT using motion information effectively.")
+    print("   It's likely relying on language priors from the base LLM.")
+else:
+    print(f"\n✓ Good: Only {100*matching/total:.1f}% of predictions are identical.")
+    print("  The model appears to use motion information to generate answers.")
