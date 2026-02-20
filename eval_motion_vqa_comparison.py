@@ -49,14 +49,18 @@ print("Loading projector weights...")
 mm_projector_weights = torch.load(f"{model_path}/mm_projector.bin", map_location='cpu')
 print(f"Found {len(mm_projector_weights)} weight tensors")
 
-mm_projector_weights_filtered = {
-    k.replace('model.mm_projector.', 'mm_projector.'): v 
-    for k, v in mm_projector_weights.items() 
-    if 'mm_projector' in k
-}
-print(f"Filtered to {len(mm_projector_weights_filtered)} projector weights")
+# Strip the 'model.mm_projector.' prefix from keys to match the module's state_dict
+mm_projector_weights_cleaned = {}
+for k, v in mm_projector_weights.items():
+    if k.startswith('model.mm_projector.'):
+        new_key = k.replace('model.mm_projector.', '')
+        mm_projector_weights_cleaned[new_key] = v
+    else:
+        mm_projector_weights_cleaned[k] = v
 
-model.get_model().load_state_dict(mm_projector_weights_filtered, strict=False)
+# Load weights into mm_projector module
+model.get_model().mm_projector.load_state_dict(mm_projector_weights_cleaned, strict=True)
+print("✓ Projector weights loaded successfully")
 
 model = model.cuda()
 model.eval()
