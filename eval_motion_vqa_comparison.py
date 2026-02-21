@@ -1,4 +1,4 @@
-"""Compare model performance with real vs random motion data"""
+"""Compare model performance with vs without fine-tuned projection weights"""
 import torch
 import sys
 import json
@@ -26,50 +26,56 @@ print("Loading config...")
 config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 vision_tower_path = config.mm_vision_tower
 
-print("Loading base model...")
-model = LlavaLlamaForCausalLM.from_pretrained(
+print("Creating model with INITIALIZED projector...")
+model_initialized = LlavaLlamaForCausalLM.from_pretrained(
     model_base,
     torch_dtype=torch.float16,
     low_cpu_mem_usage=True,
 )
-model.config.use_cache = True
+model_initialized.config.use_cache = True
 
-print("Initializing vision modules...")
-model_args = ModelArguments()
-model_args.vision_tower = vision_tower_path
-model_args.mm_vision_select_layer = config.mm_vision_select_layer
-model_args.mm_vision_select_feature = getattr(config, 'mm_vision_select_feature', 'patch')
-model_args.mm_patch_merge_type = getattr(config, 'mm_patch_merge_type', 'flat')
-model_args.mm_projector_type = config.mm_projector_type
-model_args.pretrain_mm_mlp_adapter = None
+model_args_initialized = ModelArguments()
+model_args_initialized.vision_tower = vision_tower_path
+model_args_initialized.mm_vision_select_layer = config.mm_vision_select_layer
+model_args_initialized.mm_vision_select_feature = getattr(config, 'mm_vision_select_feature', 'patch')
+model_args_initialized.mm_patch_merge_type = getattr(config, 'mm_patch_merge_type', 'flat')
+model_args_initialized.mm_projector_type = config.mm_projector_type
+model_args_initialized.pretrain_mm_mlp_adapter = None  # No pretrained weights - random initialization
 
-model.get_model().initialize_vision_modules(model_args=model_args, fsdp=None)
+model_initialized.get_model().initialize_vision_modules(model_args=model_args_initialized, fsdp=None)
+model_initialized = model_initialized.cuda()
+model_initialized.eval()
 
-print("Loading projector weights...")
-mm_projector_weights = torch.load(f"{model_path}/mm_projector.bin", map_location='cpu')
-print(f"Found {len(mm_projector_weights)} weight tensors")
-
-# Strip the 'model.mm_projector.' prefix from keys to match the module's state_dict
-mm_projector_weights_cleaned = {}
-for k, v in mm_projector_weights.items():
-    if k.startswith('model.mm_projector.'):
-        new_key = k.replace('model.mm_projector.', '')
-        mm_projector_weights_cleaned[new_key] = v
-    else:
-        mm_projector_weights_cleaned[k] = v
-
-# Load weights into mm_projector module
-model.get_model().mm_projector.load_state_dict(mm_projector_weights_cleaned, strict=True)
-print("✓ Projector weights loaded successfully")
-
-model = model.cuda()
-model.eval()
-
-# Convert projector to fp16
-for p in model.get_model().mm_projector.parameters():
+for p in model_initialized.get_model().mm_projector.parameters():
     p.data = p.data.half()
 
-print("✓ Model loaded\n")
+print("✓ Model with initialized projector ready")
+
+print("\nCreating model with FINE-TUNED projector...")
+model_finetuned = LlavaLlamaForCausalLM.from_pretrained(
+    model_base,
+    torch_dtype=torch.float16,
+    low_cpu_mem_usage=True,
+)
+model_finetuned.config.use_cache = True
+
+model_args_finetuned = ModelArguments()
+model_args_finetuned.vision_tower = vision_tower_path
+model_args_finetuned.mm_vision_select_layer = config.mm_vision_select_layer
+model_args_finetuned.mm_vision_select_feature = getattr(config, 'mm_vision_select_feature', 'patch')
+model_args_finetuned.mm_patch_merge_type = getattr(config, 'mm_patch_merge_type', 'flat')
+model_args_finetuned.mm_projector_type = config.mm_projector_type
+model_args_finetuned.pretrain_mm_mlp_adapter = f"{model_path}/mm_projector.bin"  # Load fine-tuned weights
+
+model_finetuned.get_model().initialize_vision_modules(model_args=model_args_finetuned, fsdp=None)
+model_finetuned = model_finetuned.cuda()
+model_finetuned.eval()
+
+for p in model_finetuned.get_model().mm_projector.parameters():
+    p.data = p.data.half()
+
+print("✓ Model with fine-tuned projector ready")
+print("✓ Both models loaded and ready for comparison\n")
 
 # Load test dataset
 class DataArgs:
@@ -105,11 +111,8 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
         'frames': sample['frames'],
         'total_frames': sample['total_frames']
     }
-    real_motion_tensor = test_dataset._load_motion_sequence(motion_info)
-    real_motion_tensor = real_motion_tensor.unsqueeze(0).half().cuda()
-    
-    # Create RANDOM motion with same shape
-    random_motion_tensor = torch.randn_like(real_motion_tensor)
+    motion_tensor = test_dataset._load_motion_sequence(motion_info)
+    motion_tensor = motion_tensor.unsqueeze(0).half().cuda()
     
     # Process all QA pairs for this sample
     for qa_idx, qa_pair in enumerate(sample['qa_pairs']):
@@ -125,27 +128,27 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
         
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
         
-        # Generate with REAL motion
+        # Generate with FINE-TUNED projector
         with torch.inference_mode():
-            output_ids_real = model.generate(
+            output_ids_finetuned = model_finetuned.generate(
                 input_ids,
-                images=real_motion_tensor,
+                images=motion_tensor,
                 do_sample=False,
                 max_new_tokens=128,
                 use_cache=True,
             )
-        prediction_real = tokenizer.decode(output_ids_real[0], skip_special_tokens=True).strip()
+        prediction_finetuned = tokenizer.decode(output_ids_finetuned[0], skip_special_tokens=True).strip()
         
-        # Generate with RANDOM motion
+        # Generate with INITIALIZED projector
         with torch.inference_mode():
-            output_ids_random = model.generate(
+            output_ids_initialized = model_initialized.generate(
                 input_ids,
-                images=random_motion_tensor,
+                images=motion_tensor,
                 do_sample=False,
                 max_new_tokens=128,
                 use_cache=True,
             )
-        prediction_random = tokenizer.decode(output_ids_random[0], skip_special_tokens=True).strip()
+        prediction_initialized = tokenizer.decode(output_ids_initialized[0], skip_special_tokens=True).strip()
         
         # Store result with both predictions
         result = {
@@ -154,9 +157,9 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
             'motion_id': sample.get('id', f"sample_{sample_idx}"),
             'question': question,
             'ground_truth': answer,
-            'prediction_real_motion': prediction_real,
-            'prediction_random_motion': prediction_random,
-            'predictions_match': prediction_real == prediction_random,
+            'prediction_finetuned': prediction_finetuned,
+            'prediction_initialized': prediction_initialized,
+            'predictions_match': prediction_finetuned == prediction_initialized,
             'total_frames': sample['total_frames']
         }
         results.append(result)
@@ -177,14 +180,14 @@ different = total - matching
 print(f"\n✓ Evaluation complete!")
 print(f"✓ Processed {total} QA pairs from {len(test_dataset.list_data_dict)} samples")
 print(f"\n📊 Statistics:")
-print(f"   - Predictions identical (real vs random): {matching}/{total} ({100*matching/total:.1f}%)")
-print(f"   - Predictions different (real vs random): {different}/{total} ({100*different/total:.1f}%)")
+print(f"   - Predictions identical (fine-tuned vs initialized): {matching}/{total} ({100*matching/total:.1f}%)")
+print(f"   - Predictions different (fine-tuned vs initialized): {different}/{total} ({100*different/total:.1f}%)")
 print(f"\n✓ Results saved to: {output_file}")
 
 if matching > total * 0.8:
     print(f"\n⚠️  WARNING: {100*matching/total:.1f}% of predictions are identical!")
-    print("   This suggests the model is NOT using motion information effectively.")
-    print("   It's likely relying on language priors from the base LLM.")
+    print("   This suggests fine-tuning the projector had MINIMAL impact.")
+    print("   The model may be relying primarily on language priors from the base LLM.")
 else:
     print(f"\n✓ Good: Only {100*matching/total:.1f}% of predictions are identical.")
-    print("  The model appears to use motion information to generate answers.")
+    print("   The fine-tuned projector appears to provide meaningful improvements.")
