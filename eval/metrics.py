@@ -5,6 +5,7 @@ from rouge_score import rouge_scorer
 from bert_score import BERTScorer
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from llm_providers import BaseLLMProvider
 import os
 import json
 from openai import OpenAI
@@ -93,38 +94,37 @@ class SimCSEMetric:
         
         # Returns a float between -1.0 (opposite meaning) and 1.0 (identical meaning)
         return float(sim[0][0])
-    
+
 class LLMJudgeMetric:
-    def __init__(self, api_key: str = None, model: str = "gpt-4-turbo-preview"):
-        self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
-        self.model = model
+    def __init__(self, provider: BaseLLMProvider = None):
+        # Default to OpenAI if no provider is injected
+        self.provider = provider 
 
     def compute(self, question: str, reference: str, hypothesis: str) -> dict:
+        # Prompt exactly adapted from the LLM-as-a-Judge paper guidelines
+        # for reference-guided single-answer evaluation.
         prompt = f"""
-        You are an expert evaluator grading an AI's answer to a question.
+        [System]
+        Please act as an impartial judge and evaluate the quality of the response provided by an AI assistant to the user question displayed below. 
+        Your evaluation should consider correctness and helpfulness. 
+        You will be given a reference answer and the assistant's answer.
         
-        Question: {question}
-        Ground Truth Answer: {reference}
-        AI Prediction: {hypothesis}
+        Begin your evaluation by comparing the assistant's answer with the reference answer. Identify and correct any mistakes. Be as objective as possible.
         
-        Evaluate the AI Prediction based on its semantic similarity and factual accuracy compared to the Ground Truth.
-        Ignore minor formatting differences. 
+        [User Question]
+        {question}
         
-        Provide a score from 1 to 5, where:
-        1 = Completely incorrect or irrelevant
-        3 = Partially correct, some key details missing
-        5 = Perfectly captures the meaning of the ground truth
+        [The Start of Reference Answer]
+        {reference}
+        [The End of Reference Answer]
         
-        Respond ONLY with a JSON object in this format: {{"score": <int>, "reasoning": "<string>"}}
+        [The Start of Assistant's Answer]
+        {hypothesis}
+        [The End of Assistant's Answer]
+        
+        After providing your explanation, you must rate the response on a scale of 1 to 10.
+        Respond ONLY with a valid JSON object strictly following this format: 
+        {{"score": <int>, "reasoning": "<string>"}}
         """
         
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "system", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.0 
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            return {"score": 0, "reasoning": f"Error calling LLM: {str(e)}"}
+        return self.provider.generate_json(prompt)
