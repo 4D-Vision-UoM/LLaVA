@@ -9,10 +9,20 @@ from llava.train.train import train
 def main():
     # Set paths relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
-
+    
+    ####################################################################################
+    # Path to pretrained 4D motion encoder checkpoint (MoPa)
+    ####################################################################################
     mopa_checkpoint = os.path.join(script_dir, "MoPa/ckpt/HumanML_MoPa_32_frames_64batch")
 
+    ####################################################################################
+    # Data path
+    ####################################################################################
     data_path = os.path.join(script_dir, "data/v4.4_new_sample/v4.4-humanML3d-2136-video")  # Root directory for HumanML data
+    
+    ####################################################################################
+    # Output path for fine-tuned model
+    ####################################################################################
     output_dir = os.path.join(script_dir, "checkpoints/llava-mopa-projection_10_epoch")
     
     # Ensure output directory exists
@@ -38,6 +48,9 @@ def main():
         # *** KEY: Use motion data instead of images ***
         "--use_motion_data", "True",
         
+        ####################################################################################
+        # Path to pretrained 4D motion encoder checkpoint (MoPa)
+        ####################################################################################
         # *** KEY: Use MoPa motion encoder ***
         "--vision_tower", mopa_checkpoint,
         
@@ -49,6 +62,10 @@ def main():
         "--image_aspect_ratio", "pad",
         "--group_by_modality_length", "True",
         
+        ####################################################################################
+        # Model Freezing - tune_mm_mlp_adapter will freeze backbone regardless
+        # vision model is always frozen
+        ####################################################################################
         # Freeze LLM, train only projection layer
         "--freeze_backbone", "True",
         "--tune_mm_mlp_adapter", "True",
