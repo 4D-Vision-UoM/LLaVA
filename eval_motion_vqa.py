@@ -1,4 +1,5 @@
-"""Quick debug script to check model generation"""
+"""Evaluate fine-tuned model on motion VQA dataset"""
+import os
 import torch
 import sys
 import json
@@ -14,8 +15,9 @@ from llava.train.motion_dataset import MotionLazySupervisedDataset
 from transformers import AutoConfig
 
 # Load model
-model_path = "checkpoints/llava-mopa-projection_bad_model"
+model_path = "checkpoints/HumanML_MoPa_finetuned_llama_instructions"
 model_base = "liuhaotian/llava-v1.5-7b"
+output_dir = "output"
 
 print("Loading tokenizer...")
 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
@@ -26,7 +28,7 @@ print("Loading config...")
 config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 vision_tower_path = config.mm_vision_tower
 
-print("Loading base model...")
+print("Creating model with fine-tuned projector...")
 model = LlavaLlamaForCausalLM.from_pretrained(
     model_base,
     torch_dtype=torch.float16,
@@ -34,61 +36,50 @@ model = LlavaLlamaForCausalLM.from_pretrained(
 )
 model.config.use_cache = True
 
-print("Initializing vision modules...")
 model_args = ModelArguments()
 model_args.vision_tower = vision_tower_path
 model_args.mm_vision_select_layer = config.mm_vision_select_layer
 model_args.mm_vision_select_feature = getattr(config, 'mm_vision_select_feature', 'patch')
 model_args.mm_patch_merge_type = getattr(config, 'mm_patch_merge_type', 'flat')
 model_args.mm_projector_type = config.mm_projector_type
-model_args.pretrain_mm_mlp_adapter = None
+model_args.pretrain_mm_mlp_adapter = f"{model_path}/mm_projector.bin"
 
 model.get_model().initialize_vision_modules(model_args=model_args, fsdp=None)
-
-print("Loading projector weights...")
-mm_projector_weights = torch.load(f"{model_path}/mm_projector.bin", map_location='cpu')
-print(f"Found {len(mm_projector_weights)} weight tensors")
-print(f"Keys: {list(mm_projector_weights.keys())[:5]}")
-
-mm_projector_weights_filtered = {
-    k.replace('model.mm_projector.', 'mm_projector.'): v 
-    for k, v in mm_projector_weights.items() 
-    if 'mm_projector' in k
-}
-print(f"Filtered to {len(mm_projector_weights_filtered)} projector weights")
-
-model.get_model().load_state_dict(mm_projector_weights_filtered, strict=False)
-
 model = model.cuda()
 model.eval()
 
-# Convert projector to fp16
 for p in model.get_model().mm_projector.parameters():
     p.data = p.data.half()
 
-print("✓ Model loaded\n")
+print("✓ Model loaded and ready for evaluation\n")
 
-# Load one test sample
+# Load test dataset
 class DataArgs:
     def __init__(self):
+        self.data_path = "data"
+        self.vqa_path = "data/llama3-8b-instruct"
+        self.motion_path = "data/v4.3-wall-humanML3d-2136"
         self.is_multimodal = True
         self.image_aspect_ratio = 'pad'
         self.image_grid_pinpoints = None
 
 data_args = DataArgs()
 test_dataset = MotionLazySupervisedDataset(
-    data_path="data/v4.4_new_sample/v4.4-humanML3d-2136-video",
+    data_path=data_args.data_path,
     tokenizer=tokenizer,
     data_args=data_args,
     data_split='test',
     num_frames=32,
     num_points=2048,
+    vqa_path=data_args.vqa_path,
+    motion_path=data_args.motion_path,
 )
 
 print(f"Loaded {len(test_dataset)} test samples\n")
 
 # Prepare output file
-output_file = f"eval_motion_vqa_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+os.makedirs(output_dir, exist_ok=True)
+output_file = f"{output_dir}/{model_path.split('/')[-1]}_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 print(f"Results will be saved to: {output_file}\n")
 
 results = []
@@ -97,7 +88,7 @@ results = []
 for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating samples"):
     sample = test_dataset.list_data_dict[sample_idx]
     
-    # Load motion once per sample
+    # Load motion sequence
     motion_info = {
         'frames': sample['frames'],
         'total_frames': sample['total_frames']
@@ -117,11 +108,9 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
         
-        # replace motion token with some random token for testing
-        # motion_tensor = torch.randn(1, 32, 2048, 9).half().cuda()  # Random motion data for testing
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-
-        # Generate
+        
+        # Generate prediction
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
@@ -130,9 +119,7 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
                 max_new_tokens=128,
                 use_cache=True,
             )
-        
-        # Decode generated text (output_ids already contains only generated tokens)
-        generated_text = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+        prediction = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         
         # Store result
         result = {
@@ -141,7 +128,7 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
             'motion_id': sample.get('id', f"sample_{sample_idx}"),
             'question': question,
             'ground_truth': answer,
-            'prediction': generated_text,
+            'prediction': prediction,
             'total_frames': sample['total_frames']
         }
         results.append(result)
@@ -154,6 +141,9 @@ for sample_idx in tqdm(range(len(test_dataset.list_data_dict)), desc="Evaluating
     if (sample_idx + 1) % 10 == 0:
         torch.cuda.empty_cache()
 
+# Calculate statistics
+total = len(results)
+
 print(f"\n✓ Evaluation complete!")
-print(f"✓ Processed {len(results)} QA pairs from {len(test_dataset.list_data_dict)} samples")
+print(f"✓ Processed {total} QA pairs from {len(test_dataset.list_data_dict)} samples")
 print(f"✓ Results saved to: {output_file}")
