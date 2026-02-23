@@ -16,22 +16,56 @@ class BaseLLMProvider(ABC):
     def generate_json(self, prompt: str) -> dict:
         pass
 
-# class OpenAIProvider(BaseLLMProvider):
-#     def __init__(self, api_key: str = None, model: str = "gpt-4-turbo-preview"):
-#         self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
-#         self.model = model
+class OpenRouterProvider(BaseLLMProvider):
+    def __init__(self, api_key: str = None, model: str = "openai/gpt-3.5-turbo"):
+        """
+        Connects to OpenRouter.ai, allowing you to route requests to hundreds of models.
+        Make sure to prefix the model name with the provider (e.g., 'openai/gpt-4-turbo').
+        """
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not self.api_key:
+            print("WARNING: OPENROUTER_API_KEY environment variable not set.")
+        print(f"Using Model Version: {model}")    
+        # Point the OpenAI client to the OpenRouter base URL
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=self.api_key,
+        )
+        self.model = model
 
-#     def generate_json(self, prompt: str) -> dict:
-#         try:
-#             response = self.client.chat.completions.create(
-#                 model=self.model,
-#                 messages=[{"role": "system", "content": prompt}],
-#                 response_format={"type": "json_object"},
-#                 temperature=0.0 # Deterministic grading
-#             )
-#             return json.loads(response.choices[0].message.content)
-#         except Exception as e:
-#             return {"score": 0, "reasoning": f"Error calling OpenAI API: {str(e)}"}
+    def generate_json(self, prompt: str) -> dict:
+        # We wrap the paper's prompt in a rigid system instruction just in case
+        # you route to a non-OpenAI model that needs extra nudging for JSON.
+        system_content = "You are a strict, automated evaluation script. You must ONLY output a valid JSON object in this format: {\"score\": int, \"reasoning\": \"string\"}. Do not include markdown formatting or conversational text."
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt}
+                ],
+                # OpenRouter supports this for OpenAI models (and many others)
+                response_format={"type": "json_object"},
+                temperature=0.0 # Deterministic grading
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # Fallback regex extraction in case a non-OpenAI model hallucinates markdown tags
+            start_idx = result_text.find("{")
+            end_idx = result_text.rfind("}") + 1
+            
+            if start_idx != -1 and end_idx != 0:
+                json_str = result_text[start_idx:end_idx]
+                return json.loads(json_str)
+            else:
+                raise ValueError(f"No JSON object found. Raw output: {result_text}")
+                
+        except json.JSONDecodeError as e:
+            return {"score": 0, "reasoning": f"Failed to parse OpenRouter JSON: {str(e)}"}
+        except Exception as e:
+            return {"score": 0, "reasoning": f"Error calling OpenRouter API: {str(e)}"}
 
 class TinyLlamaProvider(BaseLLMProvider):
     def __init__(self, model_id: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):

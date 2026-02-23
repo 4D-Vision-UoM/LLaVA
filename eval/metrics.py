@@ -3,7 +3,7 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer
 from bert_score import BERTScorer
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, models
 from sklearn.metrics.pairwise import cosine_similarity
 from llm_providers import BaseLLMProvider
 import os
@@ -77,22 +77,25 @@ class BertScoreMetric:
 
 class SimCSEMetric:
     def __init__(self, model_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"):
-        # The model is downloaded from Hugging Face and cached locally
-        self.model = SentenceTransformer(model_name)
+        # 1. Load the raw transformer model
+        word_embedding_model = models.Transformer(model_name)
+        
+        # 2. Force the pooling layer to use the [CLS] token (as intended by SimCSE)
+        pooling_model = models.Pooling(
+            word_embedding_model.get_word_embedding_dimension(),
+            pooling_mode='cls'  # <-- The crucial fix
+        )
+        
+        # 3. Combine them into a proper SentenceTransformer
+        self.model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
 
     def compute(self, reference: str, hypothesis: str) -> float:
-        # Handle empty predictions gracefully
         if not hypothesis.strip() or not reference.strip():
             return 0.0
             
-        # 1. Convert both sentences into 768-dimensional dense vectors
         embeddings = self.model.encode([reference, hypothesis])
-        
-        # 2. Calculate the cosine similarity between the two vectors
-        # embedding[0] is the reference, embedding[1] is the hypothesis
         sim = cosine_similarity([embeddings[0]], [embeddings[1]])
         
-        # Returns a float between -1.0 (opposite meaning) and 1.0 (identical meaning)
         return float(sim[0][0])
 
 class LLMJudgeMetric:
@@ -109,7 +112,8 @@ class LLMJudgeMetric:
         Your evaluation should consider correctness and helpfulness. 
         You will be given a reference answer and the assistant's answer.
         
-        Begin your evaluation by comparing the assistant's answer with the reference answer. Identify and correct any mistakes. Be as objective as possible.
+        Begin your evaluation by comparing the assistant's answer with the reference answer. Identify and correct any mistakes. Avoid any position biases and ensure that the order in
+        which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Be as objective as possible.
         
         [User Question]
         {question}
