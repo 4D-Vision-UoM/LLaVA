@@ -76,6 +76,10 @@ class DataArguments:
     image_aspect_ratio: str = 'square'
     use_motion_data: bool = field(default=True, 
                                    metadata={"help": "Use motion sequences instead of images"})
+    vqa_path: Optional[str] = field(default=None,
+                                    metadata={"help": "Path to VQA annotations directory"})
+    motion_path: Optional[str] = field(default=None,
+                                       metadata={"help": "Path to motion sequences directory"})
 
 
 @dataclass

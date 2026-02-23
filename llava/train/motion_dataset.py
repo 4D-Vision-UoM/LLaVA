@@ -40,15 +40,19 @@ class MotionLazySupervisedDataset(Dataset):
                  data_split: str = 'train',
                  num_frames: int = 32,
                  num_points: int = 2048,
+                 vqa_path: str = None,
+                 motion_path: str = None,
                  seed: int = 42):
         """
         Args:
-            data_path: Path to JSON file or directory with motion data
+            data_path: Base path to data (used if vqa_path/motion_path not specified)
             tokenizer: LLaVA tokenizer
             data_args: Data arguments from LLaVA
+            data_split: Split name ('train', 'test', 'val')
             num_frames: Number of frames to sample per sequence
             num_points: Number of points to sample per frame
-            augment: Whether to apply augmentations
+            vqa_path: Path to VQA directory (e.g., data/llama3-8b-instruct)
+            motion_path: Path to motion directory (e.g., data/v4.3-wall-humanML3d-2136)
             seed: Random seed
         """
         super().__init__()
@@ -62,9 +66,18 @@ class MotionLazySupervisedDataset(Dataset):
         
         self.categories = ['Action', 'Body-Spatial', 'Temporal']
         
-        # Set data_root for compatibility with _discover_samples logic
-        self.data_root = Path(data_path) if not os.path.isfile(data_path) else None
-        self.split = data_split  # Use provided data_split
+        # Set VQA and motion paths
+        if vqa_path is None:
+            self.vqa_path = Path(data_path) / "llama3-8b-instruct"
+        else:
+            self.vqa_path = Path(vqa_path)
+            
+        if motion_path is None:
+            self.motion_path = Path(data_path) / "v4.3-wall-humanML3d-2136"
+        else:
+            self.motion_path = Path(motion_path)
+        
+        self.split = data_split
         
         # Set seeds
         random.seed(seed)
@@ -72,56 +85,63 @@ class MotionLazySupervisedDataset(Dataset):
         torch.manual_seed(seed)
         
         # Discover motion sequences
-        logger.info(f"Building motion dataset from: {data_path}")
+        logger.info(f"Building motion dataset:")
+        logger.info(f"  VQA path: {self.vqa_path}")
+        logger.info(f"  Motion path: {self.motion_path}")
+        logger.info(f"  Split: {self.split}")
         
-        # Validate data path exists
-        if not os.path.exists(data_path):
-            raise ValueError(f"Data path does not exist: {data_path}")
+        # Validate paths exist
+        if not self.vqa_path.exists():
+            raise ValueError(f"VQA path does not exist: {self.vqa_path}")
+        if not self.motion_path.exists():
+            raise ValueError(f"Motion path does not exist: {self.motion_path}")
         
-        # Check if data_path is a JSON file or directory
-        if os.path.isfile(data_path) and data_path.endswith('.json'):
-            # Load from JSON file (standard LLaVA format)
-            self.list_data_dict = json.load(open(data_path, "r"))
-            self.use_json_format = True
-            logger.info(f"Loaded {len(self.list_data_dict)} samples from JSON file")
-        else:
-            # Discover from directory structure (HumanML format)
-            logger.info(f"Discovering sequences from directory: {data_path}/{self.split}/Env1")
-            self.list_data_dict = self._discover_and_convert(data_path)
-            self.use_json_format = False
+        # Discover from directory structure
+        self.list_data_dict = self._discover_and_match_sequences()
+        self.use_json_format = False
         
         if len(self.list_data_dict) == 0:
             raise ValueError(f"No samples found! Dataset is empty. Check your data path: {data_path}")
         
         logger.info(f"✓ Motion dataset initialized with {len(self.list_data_dict)} samples")
 
-    def _discover_and_convert(self, data_path: str) -> List[Dict]:
+    def _discover_and_match_sequences(self) -> List[Dict]:
         """
-        Recursively finds all 'report.json' files in the directory,
-        loads VQA data, and converts to LLaVA format.
+        Scans VQA directory for sequences with *_vqa_pairs.json files,
+        matches them with corresponding motion sequences,
+        and converts to LLaVA format.
         """
-        data_root = Path(data_path)
+        vqa_split_dir = self.vqa_path / self.split
+        motion_split_dir = self.motion_path / self.split
         
-        # Find split directory with Env1
-        split_dir = data_root / self.split / 'Env1'
-
-        # Find all report.json files
-        report_files = sorted(list(split_dir.rglob('report.json')))
+        # Find all *_vqa_pairs.json files (e.g., sequence_000000_vqa_pairs.json)
+        vqa_files = sorted(list(vqa_split_dir.rglob('*_vqa_pairs.json')))
         
-        logger.info(f"Found {len(report_files)} sequences in {split_dir}")
-        print(f"Found {len(report_files)} sequences in {split_dir}")
+        logger.info(f"Found {len(vqa_files)} VQA files in {vqa_split_dir}")
+        print(f"Found {len(vqa_files)} VQA files in {vqa_split_dir}")
         
         samples = []
-        for report_path in report_files:
-            seq_dir = report_path.parent
+        matched_count = 0
+        missing_motion = []
+        
+        for vqa_path in vqa_files:
+            # Get sequence name from parent directory
+            seq_name = vqa_path.parent.name
             
-            # Find all PCD frames
-            frame_files = sorted(list(seq_dir.glob('frame_*.pcd')))
-            if not frame_files:
+            # Find corresponding motion sequence directory
+            motion_seq_dir = motion_split_dir / seq_name
+            
+            if not motion_seq_dir.exists():
+                missing_motion.append(seq_name)
                 continue
-
+            
+            # Find all PCD frames in motion directory
+            frame_files = sorted(list(motion_seq_dir.glob('frame_*.pcd')))
+            if not frame_files:
+                logger.warning(f"No frames found for {seq_name}")
+                continue
+            
             # Parse frame numbers for sorting/sampling
-            # Assuming format "frame_XXX.pcd"
             frames = []
             for f in frame_files:
                 try:
@@ -133,60 +153,67 @@ class MotionLazySupervisedDataset(Dataset):
             frames.sort(key=lambda x: x[0])
             
             if not frames:
+                logger.warning(f"No valid frames for {seq_name}")
                 continue
             
-            # Check for VQA JSON
-            vqa_json = seq_dir / f"{seq_dir.name}_qna.json"
-            if not vqa_json.exists():
-                continue
-            
-            # Load VQA data
+            # Load VQA data from *_vqa_pairs.json
             try:
-                with open(vqa_json, 'r') as f:
+                with open(vqa_path, 'r') as f:
                     vqa_data = json.load(f)
             except (json.JSONDecodeError, ValueError) as e:
-                logger.warning(f"Failed to parse VQA JSON {vqa_json}: {e}")
+                logger.warning(f"Failed to load VQA from {vqa_path}: {e}")
                 continue
             
-            # Get Q&A pairs
-            qa_pairs = vqa_data.get('qa_pairs', [])
-            if not qa_pairs:
+            # Extract qa_pairs from the dictionary structure
+            if isinstance(vqa_data, dict) and 'qa_pairs' in vqa_data:
+                vqa_data = vqa_data['qa_pairs']
+            
+            # Validate that we have a list of Q&A pairs
+            if not isinstance(vqa_data, list):
+                logger.warning(f"VQA data is not a list in {vqa_path}")
                 continue
             
             # Validate Q&A pairs
             valid_qa_pairs = []
-            for qa_pair in qa_pairs:
+            for qa_pair in vqa_data:
                 question = qa_pair.get('question', '')
                 answer = qa_pair.get('answer', '')
                 if question and answer:
                     valid_qa_pairs.append(qa_pair)
             
             if not valid_qa_pairs:
+                logger.warning(f"No valid Q&A pairs in {vqa_path}")
                 continue
             
             # Create ONE sample per sequence, storing all Q&A pairs
             # Q&A selection happens at runtime in __getitem__
             sample = {
-                "id": seq_dir.name,
-                "motion": str(seq_dir),  # Path to sequence directory
+                "id": seq_name,
+                "motion": str(motion_seq_dir),  # Path to motion sequence directory
                 "qa_pairs": valid_qa_pairs,  # Store all Q&A pairs
                 "frames": frames,
                 "total_frames": len(frames),
             }
-            
             samples.append(sample)
+            matched_count += 1
         
         # Calculate total Q&A pairs for logging
         total_qa_pairs = sum(len(s['qa_pairs']) for s in samples)
-        logger.info(f"Created {len(samples)} sequences with {total_qa_pairs} total Q&A pairs from {len(report_files)} report files")
+        logger.info(f"Matched {matched_count}/{len(vqa_files)} sequences")
+        logger.info(f"Created {len(samples)} sequences with {total_qa_pairs} total Q&A pairs")
+        
+        if missing_motion:
+            logger.warning(f"Missing motion data for {len(missing_motion)} sequences (first 10): {missing_motion[:10]}")
         
         if len(samples) == 0:
-            logger.error(f"No samples found in {split_dir}")
-            logger.error(f"Checked for: report.json files and corresponding _qna.json files")
-            raise ValueError(f"No training samples found in {split_dir}. "
-                           "Please check that the data directory contains sequences with report.json "
-                           "and *_qna.json files.")
-        print(f"✓ Discovered {len(samples)} sequences with {total_qa_pairs} Q&A pairs (train: random selection, test: first Q&A)")
+            raise ValueError(
+                f"No valid samples found!\n"
+                f"VQA path: {vqa_split_dir}\n"
+                f"Motion path: {motion_split_dir}\n"
+                f"Found {len(vqa_files)} VQA files but no matches with motion data."
+            )
+        
+        print(f"✓ Matched {matched_count} sequences with {total_qa_pairs} Q&A pairs (train: random selection, test: first Q&A)")
         return samples
 
     def _load_pcd(self, pcd_path: str) -> np.ndarray:
@@ -498,8 +525,19 @@ def make_motion_supervised_data_module(tokenizer, data_args) -> Dict:
     Create motion-based dataset and collator for LLaVA training.
     
     This replaces make_supervised_data_module for motion-based training.
+    
+    Args:
+        tokenizer: LLaVA tokenizer
+        data_args: Should have:
+            - data_path: Base directory containing VQA and motion subdirectories
+            - vqa_path (optional): Explicit path to VQA directory
+            - motion_path (optional): Explicit path to motion directory
     """
     from llava.train.train import DataCollatorForSupervisedDataset
+    
+    # Get VQA and motion paths from data_args if available
+    vqa_path = getattr(data_args, 'vqa_path', None)
+    motion_path = getattr(data_args, 'motion_path', None)
     
     train_dataset = MotionLazySupervisedDataset(
         data_path=data_args.data_path,
@@ -508,7 +546,10 @@ def make_motion_supervised_data_module(tokenizer, data_args) -> Dict:
         num_frames=32,
         num_points=2048,
         data_split='train',
+        vqa_path=vqa_path,
+        motion_path=motion_path,
     )
+    
     
     eval_dataset = MotionLazySupervisedDataset(
         data_path=data_args.data_path,
@@ -517,6 +558,8 @@ def make_motion_supervised_data_module(tokenizer, data_args) -> Dict:
         num_frames=32,
         num_points=2048,
         data_split='test',
+        vqa_path=vqa_path,
+        motion_path=motion_path,
     )
     
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
