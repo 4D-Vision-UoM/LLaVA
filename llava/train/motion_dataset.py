@@ -107,15 +107,15 @@ class MotionLazySupervisedDataset(Dataset):
 
     def _discover_and_match_sequences(self) -> List[Dict]:
         """
-        Scans VQA directory for sequences with vqa.json files,
+        Scans VQA directory for sequences with *_vqa_pairs.json files,
         matches them with corresponding motion sequences,
         and converts to LLaVA format.
         """
         vqa_split_dir = self.vqa_path / self.split
         motion_split_dir = self.motion_path / self.split
         
-        # Find all vqa.json files
-        vqa_files = sorted(list(vqa_split_dir.rglob('vqa.json')))
+        # Find all *_vqa_pairs.json files (e.g., sequence_000000_vqa_pairs.json)
+        vqa_files = sorted(list(vqa_split_dir.rglob('*_vqa_pairs.json')))
         
         logger.info(f"Found {len(vqa_files)} VQA files in {vqa_split_dir}")
         print(f"Found {len(vqa_files)} VQA files in {vqa_split_dir}")
@@ -156,7 +156,7 @@ class MotionLazySupervisedDataset(Dataset):
                 logger.warning(f"No valid frames for {seq_name}")
                 continue
             
-            # Load VQA data from vqa.json
+            # Load VQA data from *_vqa_pairs.json
             try:
                 with open(vqa_path, 'r') as f:
                     vqa_data = json.load(f)
@@ -164,7 +164,11 @@ class MotionLazySupervisedDataset(Dataset):
                 logger.warning(f"Failed to load VQA from {vqa_path}: {e}")
                 continue
             
-            # vqa.json is a list of Q&A dictionaries with 'question' and 'answer' keys
+            # Extract qa_pairs from the dictionary structure
+            if isinstance(vqa_data, dict) and 'qa_pairs' in vqa_data:
+                vqa_data = vqa_data['qa_pairs']
+            
+            # Validate that we have a list of Q&A pairs
             if not isinstance(vqa_data, list):
                 logger.warning(f"VQA data is not a list in {vqa_path}")
                 continue

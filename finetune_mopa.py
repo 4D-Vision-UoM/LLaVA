@@ -21,14 +21,14 @@ def main():
     # Base data directory
     data_path = os.path.join(script_dir, "data")
     # VQA annotations (questions and answers)
-    vqa_path = os.path.join(script_dir, "data/llama3-8b-instruct")
+    vqa_path = os.path.join(script_dir, "data/gemini-flash")
     # Motion sequences (PCD files)
     motion_path = os.path.join(script_dir, "data/v4.3-wall-humanML3d-2136")
     
     ####################################################################################
     # Output path for fine-tuned model
     ####################################################################################
-    output_dir = os.path.join(script_dir, "checkpoints/HumanML_MoPa_finetuned_llama_instructions")
+    output_dir = os.path.join(script_dir, "checkpoints/HumanML_MoPa_finetuned_gemini_30epoch")
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -83,7 +83,7 @@ def main():
         "--bf16", "True" if torch.cuda.is_bf16_supported() else "False",
         "--fp16", "False" if torch.cuda.is_bf16_supported() else "True",
         "--output_dir", output_dir,
-        "--num_train_epochs", "1",
+        "--num_train_epochs", "30",
         "--per_device_train_batch_size", "2",
         "--per_device_eval_batch_size", "2",
         "--gradient_accumulation_steps", "2",
