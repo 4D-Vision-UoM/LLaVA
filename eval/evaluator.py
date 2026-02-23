@@ -6,7 +6,7 @@ from tqdm import tqdm
 from metrics import BleuMetric, RougeMetric, MeteorMetric, BertScoreMetric, SimCSEMetric, LLMJudgeMetric
 
 class PipelineEvaluator:
-    def __init__(self, run_llm_judge=False, max_workers=2):
+    def __init__(self, run_llm_judge=False, max_workers=10):
         self.bleu = BleuMetric()
         self.rouge = RougeMetric()
         self.meteor = MeteorMetric()       
@@ -27,7 +27,7 @@ class PipelineEvaluator:
                       failed_filepath: str = "failed_llm_evals.json",
                       test_mode: bool = False,                        
                       test_samples: int = 10,
-                      save_interval: int = 2):
+                      save_interval: int = 50):
         
         with open(input_filepath, 'r') as f:
             data = json.load(f)
@@ -50,10 +50,10 @@ class PipelineEvaluator:
             for future in progress_bar:
                 completed += 1
                 try:
-                    item, ft_failed, init_failed = future.result()
+                    item, has_failed = future.result()
                     sample_idx = item.get('sample_idx')
                     
-                    if ft_failed or init_failed:
+                    if has_failed:
                         tqdm.write(f"  -> [WARNING] LLM Judge parse failed for idx {sample_idx}.")
                         failed_llm_samples.append(item)
 
@@ -61,7 +61,6 @@ class PipelineEvaluator:
 
                     if completed % save_interval == 0:
                         tqdm.write(f"--- Checkpoint Reached ({completed} items). Saving to disk... ---")
-                        # Notice we no longer pass running totals. It recalculates purely from the valid results.
                         self._save_state(results, failed_llm_samples, output_filepath, failed_filepath, aggregation_filepath)
 
                 except Exception as exc:
@@ -73,29 +72,21 @@ class PipelineEvaluator:
     def _process_item(self, item: dict) -> tuple:
         ground_truth = item.get("ground_truth", "")
         question = item.get("question", "")
+        prediction = item.get("prediction", "")
         
-        finetuned_eval = self._evaluate_single(question, ground_truth, item.get("prediction_finetuned", ""))
-        initialized_eval = self._evaluate_single(question, ground_truth, item.get("prediction_initialized", ""))
+        eval_result = self._evaluate_single(question, ground_truth, prediction)
         
-        ft_failed = False
-        init_failed = False
+        has_failed = False
         
         if self.run_llm_judge:
-            ft_judge = finetuned_eval.get("llm_judge", {})
-            init_judge = initialized_eval.get("llm_judge", {})
-            
-            ft_failed = ft_judge.get("score", 0) == 0 and "error" in ft_judge.get("reasoning", "").lower()
-            init_failed = init_judge.get("score", 0) == 0 and "error" in init_judge.get("reasoning", "").lower()
+            judge_res = eval_result.get("llm_judge", {})
+            if judge_res.get("score", 0) == 0 and "error" in judge_res.get("reasoning", "").lower():
+                has_failed = True
         
-        item["evaluations"] = {
-            "finetuned_model": finetuned_eval,
-            "initialized_model": initialized_eval
-        }
-        
-        return item, ft_failed, init_failed
+        item["evaluation"] = eval_result
+        return item, has_failed
 
     def _save_state(self, results, failed_samples, out_file, fail_file, agg_file):
-        """Saves current state and triggers a strict recalculation of averages."""
         with open(out_file, 'w') as f:
             json.dump(results, f, indent=4)
             
@@ -103,7 +94,6 @@ class PipelineEvaluator:
             with open(fail_file, 'w') as f:
                 json.dump(failed_samples, f, indent=4)
 
-        # Centralized aggregation call
         self._recalculate_aggregations(results, agg_file)
 
     def retry_failed(self, 
@@ -131,34 +121,31 @@ class PipelineEvaluator:
             progress_bar = tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Retrying Fails")
             
             for future in progress_bar:
-                item, ft_failed, init_failed = future.result()
+                item, has_failed = future.result()
                 sample_idx = item.get("sample_idx")
                 
-                if ft_failed or init_failed:
+                if has_failed:
                     tqdm.write(f"     [FAILED AGAIN] idx: {sample_idx}")
                     still_failed.append(item)
                 else:
                     tqdm.write(f"     [SUCCESS] idx: {sample_idx}")
                     fixed_count += 1
                     
-                    # Ensure the successful item is appended or updated in the main results
                     found_in_main = False
                     for main_item in main_results:
                         if main_item.get("sample_idx") == sample_idx:
-                            main_item["evaluations"] = item["evaluations"]
+                            main_item["evaluation"] = item["evaluation"]
                             found_in_main = True
                             break
                             
                     if not found_in_main:
                         main_results.append(item)
 
-        # Save merged results and the remaining failures
         with open(main_output_filepath, 'w') as f:
             json.dump(main_results, f, indent=4)
         with open(failed_filepath, 'w') as f:
             json.dump(still_failed, f, indent=4)
 
-        # Triggers the exact same aggregation math used in the main run
         self._recalculate_aggregations(main_results, main_aggregation_filepath)
         print(f"\nRetry complete. Fixed {fixed_count} items. {len(still_failed)} items still failing.")
 
@@ -204,50 +191,29 @@ class PipelineEvaluator:
 
     def _recalculate_aggregations(self, all_results: list, aggregation_filepath: str):
         """
-        The single source of truth for all averages. 
-        It STRICTLY filters out failed LLM parses from the final counts and totals.
+        Calculates averages strictly for valid evaluations.
         """
-        totals = {"finetuned_model": {}, "initialized_model": {}}
-        counts = {"finetuned_model": 0, "initialized_model": 0}
+        totals = {}
+        count = 0
         
         for item in all_results:
-            evals = item.get("evaluations", {})
-            ft_eval = evals.get("finetuned_model", {})
-            init_eval = evals.get("initialized_model", {})
+            eval_res = item.get("evaluation", {})
             
-            # --- STRICT SUCCESS FILTERING ---
-            # 1. Check Finetuned
-            ft_valid = "error" not in ft_eval
-            if self.run_llm_judge and ft_valid:
-                # If the score is 0, it failed the parse and is NOT valid for aggregation
-                if ft_eval.get("llm_judge", {}).get("score", 0) == 0:
-                    ft_valid = False
+            is_valid = "error" not in eval_res
+            if self.run_llm_judge and is_valid:
+                if eval_res.get("llm_judge", {}).get("score", 0) == 0:
+                    is_valid = False
                     
-            if ft_valid:
-                self._accumulate_metrics(totals["finetuned_model"], ft_eval)
-                counts["finetuned_model"] += 1
-
-            # 2. Check Initialized
-            init_valid = "error" not in init_eval
-            if self.run_llm_judge and init_valid:
-                if init_eval.get("llm_judge", {}).get("score", 0) == 0:
-                    init_valid = False
-                    
-            if init_valid:
-                self._accumulate_metrics(totals["initialized_model"], init_eval)
-                counts["initialized_model"] += 1
+            if is_valid:
+                self._accumulate_metrics(totals, eval_res)
+                count += 1
 
         aggregated_results = {
-            "finetuned_model_averages": self._average_metrics(totals["finetuned_model"], counts["finetuned_model"]),
-            "initialized_model_averages": self._average_metrics(totals["initialized_model"], counts["initialized_model"]),
-            "total_successful_samples": {
-                "finetuned_model": counts["finetuned_model"],
-                "initialized_model": counts["initialized_model"]
-            }
+            "averages": self._average_metrics(totals, count),
+            "total_successful_samples": count
         }
         
         with open(aggregation_filepath, 'w') as f:
             json.dump(aggregated_results, f, indent=4)
         
-        # We output this so you can verify exactly how many successful items were just written to the file
-        tqdm.write(f"Aggregations updated. (Valid FT: {counts['finetuned_model']}, Valid Init: {counts['initialized_model']})")
+        tqdm.write(f"Aggregations updated. (Valid items: {count})")
