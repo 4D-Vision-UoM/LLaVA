@@ -13,7 +13,7 @@ def main():
     ####################################################################################
     # Path to pretrained 4D motion encoder checkpoint (MoPa)
     ####################################################################################
-    mopa_checkpoint = os.path.join(script_dir, "MoPa/ckpt/HumanML_MoPa_32_frames_64batch")
+    mopa_checkpoint = os.path.join(script_dir, "MoPa/ckpt/HumanML_MoPa_32_frames_72batch")
 
     ####################################################################################
     # Data path
@@ -23,7 +23,7 @@ def main():
     ####################################################################################
     # Output path for fine-tuned model
     ####################################################################################
-    output_dir = os.path.join(script_dir, "checkpoints/llava-mopa-projection_10_epoch")
+    output_dir = os.path.join(script_dir, "checkpoints/test")
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -85,13 +85,13 @@ def main():
         "--weight_decay", "0.0",
         "--warmup_ratio", "0.03",
         "--lr_scheduler_type", "cosine",
-        "--logging_steps", "1",
+        "--logging_steps", "10",  # Log every 10 steps to reduce clutter
         "--tf32", "True" if torch.cuda.is_available() else "False",
         "--model_max_length", "2048",
         "--gradient_checkpointing", "True",
         "--dataloader_num_workers", "2",
         "--lazy_preprocess", "True",
-        "--report_to", "none",
+        "--report_to", "tensorboard",  # Log to TensorBoard (built-in, no extra setup needed)
     ]
     
     print("\nStarting training with MoPa motion encoder...")
