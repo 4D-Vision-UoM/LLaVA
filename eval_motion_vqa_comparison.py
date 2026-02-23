@@ -80,18 +80,23 @@ print("✓ Both models loaded and ready for comparison\n")
 # Load test dataset
 class DataArgs:
     def __init__(self):
+        self.data_path = "data"
+        self.vqa_path = "data/llama3-8b-instruct"
+        self.motion_path = "data/v4.3-wall-humanML3d-2136"
         self.is_multimodal = True
         self.image_aspect_ratio = 'pad'
         self.image_grid_pinpoints = None
 
 data_args = DataArgs()
 test_dataset = MotionLazySupervisedDataset(
-    data_path="data/v4.4_new_sample/v4.4-humanML3d-2136-video",
+    data_path=data_args.data_path,
     tokenizer=tokenizer,
     data_args=data_args,
     data_split='test',
     num_frames=32,
     num_points=2048,
+    vqa_path=data_args.vqa_path,
+    motion_path=data_args.motion_path,
 )
 
 print(f"Loaded {len(test_dataset)} test samples\n")

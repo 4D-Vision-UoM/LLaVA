@@ -16,14 +16,19 @@ def main():
     mopa_checkpoint = os.path.join(script_dir, "MoPa/ckpt/HumanML_MoPa_32_frames_72batch")
 
     ####################################################################################
-    # Data path
+    # Data paths
     ####################################################################################
-    data_path = os.path.join(script_dir, "data/v4.4_new_sample/v4.4-humanML3d-2136-video")  # Root directory for HumanML data
+    # Base data directory
+    data_path = os.path.join(script_dir, "data")
+    # VQA annotations (questions and answers)
+    vqa_path = os.path.join(script_dir, "data/llama3-8b-instruct")
+    # Motion sequences (PCD files)
+    motion_path = os.path.join(script_dir, "data/v4.3-wall-humanML3d-2136")
     
     ####################################################################################
     # Output path for fine-tuned model
     ####################################################################################
-    output_dir = os.path.join(script_dir, "checkpoints/test")
+    output_dir = os.path.join(script_dir, "checkpoints/HumanML_MoPa_finetuned_llama_instructions")
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -32,7 +37,9 @@ def main():
     print("LLaVA Training with MoPa Motion Encoder")
     print("=" * 80)
     print(f"MoPa checkpoint: {mopa_checkpoint}")
-    print(f"Data path: {data_path}")
+    print(f"Base data path: {data_path}")
+    print(f"VQA path: {vqa_path}")
+    print(f"Motion path: {motion_path}")
     print(f"Output directory: {output_dir}")
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
@@ -44,6 +51,8 @@ def main():
         "--model_name_or_path", "liuhaotian/llava-v1.5-7b",
         "--version", "v1",
         "--data_path", data_path,
+        "--vqa_path", vqa_path,
+        "--motion_path", motion_path,
         
         # *** KEY: Use motion data instead of images ***
         "--use_motion_data", "True",
@@ -74,7 +83,7 @@ def main():
         "--bf16", "True" if torch.cuda.is_bf16_supported() else "False",
         "--fp16", "False" if torch.cuda.is_bf16_supported() else "True",
         "--output_dir", output_dir,
-        "--num_train_epochs", "10",
+        "--num_train_epochs", "1",
         "--per_device_train_batch_size", "2",
         "--per_device_eval_batch_size", "2",
         "--gradient_accumulation_steps", "2",
@@ -85,11 +94,11 @@ def main():
         "--weight_decay", "0.0",
         "--warmup_ratio", "0.03",
         "--lr_scheduler_type", "cosine",
-        "--logging_steps", "10",  # Log every 10 steps to reduce clutter
+        "--logging_steps", "100",  # Log every 10 steps to reduce clutter
         "--tf32", "True" if torch.cuda.is_available() else "False",
         "--model_max_length", "2048",
         "--gradient_checkpointing", "True",
-        "--dataloader_num_workers", "2",
+        "--dataloader_num_workers", "24",
         "--lazy_preprocess", "True",
         "--report_to", "tensorboard",  # Log to TensorBoard (built-in, no extra setup needed)
     ]
