@@ -149,10 +149,16 @@ class PipelineEvaluator:
         self._recalculate_aggregations(main_results, main_aggregation_filepath)
         print(f"\nRetry complete. Fixed {fixed_count} items. {len(still_failed)} items still failing.")
 
-    def _evaluate_single(self, question: str, reference: str, hypothesis: str) -> dict:
-        if not hypothesis or not reference:
-            return {"error": "Missing prediction or ground truth"}
 
+    def _evaluate_single(self, question: str, reference: str, hypothesis: str) -> dict:
+        if not reference or not str(reference).strip():
+            return {"error": "Missing ground truth reference"}
+
+        # Sanitize hypothesis to empty string if None
+        hypothesis = str(hypothesis).strip() if hypothesis else ""
+
+        # 1. Let local metrics compute their native zero-structures
+        # (Most metric wrappers handle "" safely by returning 0 in their correct dict/float schema)
         with self.local_metrics_lock:
             metrics_result = {
                 "bleu": self.bleu.compute(reference, hypothesis),
@@ -163,7 +169,15 @@ class PipelineEvaluator:
             }
 
         if self.run_llm_judge:
-            metrics_result["llm_judge"] = self.llm_judge.compute(question, reference, hypothesis)
+            # 2. INTERCEPT empty predictions for the LLM ONLY.
+            # This saves API costs and prevents the LLM from crashing on empty prompts.
+            if not hypothesis:
+                metrics_result["llm_judge"] = {
+                    "score": 1, 
+                    "reasoning": "The model failed to generate any text (empty output)."
+                }
+            else:
+                metrics_result["llm_judge"] = self.llm_judge.compute(question, reference, hypothesis)
 
         return metrics_result
 
