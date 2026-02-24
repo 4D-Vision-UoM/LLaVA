@@ -1,32 +1,21 @@
 from llm_providers import TinyLlamaProvider,GeminiProvider,OpenRouterProvider
 from metrics import LLMJudgeMetric
 from evaluator import PipelineEvaluator
+from utils import load_config, setup_global_logging
 import yaml
-import os
-
- 
-def load_config(filepath="config.yaml"):
-    """Loads the YAML configuration file securely."""
-    if not os.path.exists(filepath):
-        print(f"Warning: {filepath} not found. Falling back to environment variables.")
-        return {}
-        
-    with open(filepath, 'r') as file:
-        try:
-            return yaml.safe_load(file) or {}
-        except yaml.YAMLError as e:
-            print(f"Error parsing YAML file: {e}")
-            return {}   
+import os 
         
         
 def main():
 # 1. Load the configuration
     config = load_config("config/openai_config.yaml")
-    base_dir = "eval/ours/vqa-video"
-    input_file = f"{base_dir}/HumanML_MoPa_finetuned_gemini_10epoch_evaluation.json"   # Your input JSON file
+    base_dir = "eval/Psttransformer/vqa-video/10epoch"
+    input_file = f"{base_dir}/HumanML_PSTTransformer_finetuned_gemini_10epoch_evaluation_20260224_015316.json"   # Your input JSON file
     output_file = f"{base_dir}/results.json" # Where the evaluated data will be saved
     aggregation_filepath=f"{base_dir}/aggregated_metrics.json" # Where the average metrics will be saved
     failed_filepath=f"{base_dir}/failed_llm_evals.json" # Where any failed LLM evaluations will be saved for retrying
+    
+    setup_global_logging(base_dir)  # Initialize logging to file and console
     
     # Safely extract the keys (returns None if the key doesn't exist)
     openrouter_key = config.get("OPENROUTER_API_KEY", {})
@@ -36,7 +25,7 @@ def main():
     model_provider = OpenRouterProvider(api_key=openrouter_key, model=target_model)
     
     # 2. Inject it into the Judge
-    evaluator = PipelineEvaluator(run_llm_judge=True, max_workers=10)
+    evaluator = PipelineEvaluator(run_llm_judge=True, max_workers=15)
     evaluator.llm_judge = LLMJudgeMetric(provider=model_provider)
     
 # --- Mode 1: First Time Run ---
