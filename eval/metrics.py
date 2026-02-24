@@ -106,6 +106,10 @@ class LLMJudgeMetric:
     def compute(self, question: str, reference: str, hypothesis: str) -> dict:
         # Prompt exactly adapted from the LLM-as-a-Judge paper guidelines
         # for reference-guided single-answer evaluation.
+        safe_reference = json.dumps(reference)
+        safe_hypothesis = json.dumps(hypothesis)
+        print(f"\nEvaluating with LLM Judge...\nQuestion: {question}\nReference: {reference}\nHypothesis: {hypothesis}")    
+        
         prompt = f"""
         [System]
         Please act as an impartial judge and evaluate the quality of the response provided by an AI assistant to the user question displayed below. 
@@ -119,11 +123,11 @@ class LLMJudgeMetric:
         {question}
         
         [The Start of Reference Answer]
-        {reference}
+        {safe_reference}
         [The End of Reference Answer]
         
         [The Start of Assistant's Answer]
-        {hypothesis}
+        {safe_hypothesis}
         [The End of Assistant's Answer]
         
         After providing your explanation, you must rate the response on a scale of 1 to 10.
