@@ -2,6 +2,7 @@ import os
 import requests
 import base64
 from .base_model import BaseVideoModel
+from utils import load_config
 
 class OpenRouterVideoModel(BaseVideoModel):
     def __init__(self, model_name="google/gemini-1.5-pro"):
@@ -10,7 +11,8 @@ class OpenRouterVideoModel(BaseVideoModel):
         Make sure you have set the OPENROUTER_API_KEY environment variable.
         """
         self.model_name = model_name
-        self.api_key = os.environ.get("OPENROUTER_API_KEY")
+        config = load_config("config/openai_config.yaml")
+        self.api_key = config.get("OPENROUTER_API_KEY", {})
         
         if not self.api_key:
             raise ValueError("Error: OPENROUTER_API_KEY environment variable is not set.")
