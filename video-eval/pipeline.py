@@ -2,19 +2,41 @@ import os
 import concurrent.futures
 from threading import Lock
 from tqdm import tqdm
-from utils import get_total_frames, load_json, save_json
+import uuid
+from utils import get_total_frames_and_fps, load_json, save_json, get_frame_indices, create_sampled_video
 
 def process_single_task(task_args):
-    """Worker function for parallel processing."""
-    video_path, question, ground_truth, motion_id, sample_idx, qa_idx, total_frames, model = task_args
+    # Make sure to unpack orig_fps here!
+    video_path, question, ground_truth, motion_id, sample_idx, qa_idx, total_frames, orig_fps, model, sampling_mode = task_args
     
-    # Run the model inference
-    prediction = model.analyze_video(video_path, question)
+    # 1. Get the indices based on the selected mode (now using orig_fps)
+    indices = get_frame_indices(total_frames, orig_fps, mode=sampling_mode, num_frames=32, stride=2, split='test')
     
-    # Determine if an error occurred during processing
-    is_error = prediction.startswith("Error:") or "Error processing video" in prediction
+    temp_video_path = None
     
-    # Construct the result dictionary using the passed-in sample_idx
+    try:
+        if sampling_mode == 'all':
+            # Create a 10FPS temporary video of ALL the resampled frames
+            unique_id = uuid.uuid4().hex[:8]
+            temp_video_path = f"./temp_{motion_id}_{qa_idx}_{unique_id}.mp4"
+            create_sampled_video(video_path, temp_video_path, indices, target_fps=10)
+            prediction = model.analyze_video(temp_video_path, question)
+        else:
+            # Create the 32-frame Windowed temporary video
+            unique_id = uuid.uuid4().hex[:8]
+            temp_video_path = f"./temp_{motion_id}_{qa_idx}_{unique_id}.mp4"
+            create_sampled_video(video_path, temp_video_path, indices, target_fps=10)
+            prediction = model.analyze_video(temp_video_path, question)
+            
+    except Exception as e:
+        prediction = f"Error generating or analyzing video: {str(e)}"
+    finally:
+        # 5. Clean up the temporary video file if we created one
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+
+    is_error = prediction.startswith("Error:") or "Error processing" in prediction
+    
     task_info = {
         "sample_idx": sample_idx,
         "qa_idx": qa_idx,
@@ -22,12 +44,14 @@ def process_single_task(task_args):
         "question": question,
         "ground_truth": ground_truth,
         "prediction": prediction,
-        "total_frames": total_frames
+        "total_frames": total_frames,
+        # "sampling_mode": sampling_mode, # Track which mode was used
+        # "sampled_indices": indices      # Track the exact frames used
     }
     
     return is_error, task_info
 
-def process_vqa_dataset(vqa_dir, video_dir, output_path, failures_path, model, max_samples=None, retry_failed=False, max_workers=5):
+def process_vqa_dataset(vqa_dir, video_dir, output_path, failures_path, model, max_samples=None, retry_failed=False, max_workers=5,sampling_mode='window',):
     """
     Processes the VQA dataset in parallel.
     Assigns a uniform sample_idx for all questions belonging to the same sequence.
@@ -57,8 +81,8 @@ def process_vqa_dataset(vqa_dir, video_dir, output_path, failures_path, model, m
         
         if not os.path.exists(json_path) or not os.path.exists(video_path):
             continue
-            
-        total_frames = get_total_frames(video_path)
+        
+        total_frames, orig_fps = get_total_frames_and_fps(video_path)
         vqa_data = load_json(json_path)
         qa_pairs = vqa_data.get("qa_pairs", [])
         
@@ -83,7 +107,7 @@ def process_vqa_dataset(vqa_dir, video_dir, output_path, failures_path, model, m
                 
             # Add the task to the queue, making sure to pass sample_idx!
             tasks_to_run.append(
-                (video_path, question, ground_truth, motion_id, sample_idx, qa_idx, total_frames, model)
+                (video_path, question, ground_truth, motion_id, sample_idx, qa_idx, total_frames,orig_fps, model, sampling_mode)
             )
 
     print(f"Tasks queued for processing: {len(tasks_to_run)}")
