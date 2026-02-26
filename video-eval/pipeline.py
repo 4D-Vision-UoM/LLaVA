@@ -17,10 +17,8 @@ def process_single_task(task_args):
     try:
         if sampling_mode == 'all':
             # Create a 10FPS temporary video of ALL the resampled frames
-            unique_id = uuid.uuid4().hex[:8]
-            temp_video_path = f"./temp_{motion_id}_{qa_idx}_{unique_id}.mp4"
-            create_sampled_video(video_path, temp_video_path, indices, target_fps=10)
-            prediction = model.analyze_video(temp_video_path, question)
+                       # OPTIMIZATION: If we want all frames, just pass the original video directly
+            prediction = model.analyze_video(video_path, question)
         else:
             # Create the 32-frame Windowed temporary video
             unique_id = uuid.uuid4().hex[:8]
