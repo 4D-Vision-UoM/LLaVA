@@ -58,6 +58,7 @@ class OpenRouterProvider(BaseLLMProvider):
             
             if start_idx != -1 and end_idx != 0:
                 json_str = result_text[start_idx:end_idx]
+                print(f"Raw LLM Output: {result_text}")
                 return json.loads(json_str)
             else:
                 raise ValueError(f"No JSON object found. Raw output: {result_text}")
