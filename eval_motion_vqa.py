@@ -15,7 +15,7 @@ from llava.train.motion_dataset import MotionLazySupervisedDataset
 from transformers import AutoConfig
 
 # Load model
-model_path = "checkpoints/HumanML_MoPa_finetuned_gemini_10epoch"
+model_path = "checkpoints/HumanML_MoPa_sampleset_10epoch_with_val_fix"
 model_base = "liuhaotian/llava-v1.5-7b"
 output_dir = "output"
 
@@ -42,7 +42,7 @@ model_args.mm_vision_select_layer = config.mm_vision_select_layer
 model_args.mm_vision_select_feature = getattr(config, 'mm_vision_select_feature', 'patch')
 model_args.mm_patch_merge_type = getattr(config, 'mm_patch_merge_type', 'flat')
 model_args.mm_projector_type = config.mm_projector_type
-# model_args.pretrain_mm_mlp_adapter = f"{model_path}/mm_projector.bin"  # Disabled - not loading projector weights
+model_args.pretrain_mm_mlp_adapter = f"{model_path}/mm_projector.bin"  # Load fine-tuned projector weights
 
 model.get_model().initialize_vision_modules(model_args=model_args, fsdp=None)
 model = model.cuda()
@@ -57,7 +57,7 @@ print("✓ Model loaded and ready for evaluation\n")
 class DataArgs:
     def __init__(self):
         self.data_path = "data"
-        self.vqa_path = "data/gemini-flash"
+        self.vqa_path = "data/gemini-flash/sample-set"
         self.motion_path = "data/v4.3-wall-humanML3d-2136"
         self.is_multimodal = True
         self.image_aspect_ratio = 'pad'
