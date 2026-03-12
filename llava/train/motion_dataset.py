@@ -115,7 +115,12 @@ class MotionLazySupervisedDataset(Dataset):
         motion_split_dir = self.motion_path / self.split
         
         # Find all *_vqa_pairs.json files (e.g., sequence_000000_vqa_pairs.json)
+        # vqa_files = sorted(list(vqa_split_dir.rglob('*_qna.json')))
         vqa_files = sorted(list(vqa_split_dir.rglob('*_vqa_pairs.json')))
+        # if not found any try the other pattern
+        if len(vqa_files) == 0:
+            vqa_files = sorted(list(vqa_split_dir.rglob('*_qna.json')))
+        
         
         logger.info(f"Found {len(vqa_files)} VQA files in {vqa_split_dir}")
         print(f"Found {len(vqa_files)} VQA files in {vqa_split_dir}")
