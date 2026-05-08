@@ -1,6 +1,6 @@
 
-
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "8"
 import json
 import torch
 from llava.train.train import train
@@ -13,7 +13,7 @@ def main():
     ####################################################################################
     # Path to pretrained 4D motion encoder checkpoint (MoPa)
     ####################################################################################
-    mopa_checkpoint = os.path.join(script_dir, "MoPa/ckpt/HumanML_MoPa_32_frames_72batch")
+    mopa_checkpoint = os.path.join(script_dir, "HumanML_ckpts/HumanML_MoPa_32_frames_72batch _with_ddp")
 
     ####################################################################################
     # Data paths
@@ -21,14 +21,14 @@ def main():
     # Base data directory
     data_path = os.path.join(script_dir, "data")
     # VQA annotations (questions and answers)
-    vqa_path = os.path.join(script_dir, "data/gemini-flash")
+    vqa_path = os.path.join(script_dir, "data/vqa-humanml/experiment-datasets-new/exp_1")
     # Motion sequences (PCD files)
     motion_path = os.path.join(script_dir, "data/v4.3-wall-humanML3d-2136")
     
     ####################################################################################
     # Output path for fine-tuned model
     ####################################################################################
-    output_dir = os.path.join(script_dir, "checkpoints/HumanML_MoPa_finetuned_gemini_30epoch")
+    output_dir = os.path.join(script_dir, "checkpoints/experiment1/HumanML_MoPa-DDP_finetuned_gemini_10epoch_2batch")
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -83,13 +83,16 @@ def main():
         "--bf16", "True" if torch.cuda.is_bf16_supported() else "False",
         "--fp16", "False" if torch.cuda.is_bf16_supported() else "True",
         "--output_dir", output_dir,
-        "--num_train_epochs", "30",
+        "--num_train_epochs", "10",
         "--per_device_train_batch_size", "2",
         "--per_device_eval_batch_size", "2",
         "--gradient_accumulation_steps", "2",
         "--evaluation_strategy", "epoch",  # Changed from "no" to "epoch"
         "--save_strategy", "epoch",  # Changed to match eval strategy
-        "--save_total_limit", "1",
+        "--save_total_limit", "3",  # Keep top 3 checkpoints
+        "--load_best_model_at_end", "True",  # Load best checkpoint when training ends
+        "--metric_for_best_model", "eval_loss",  # Use validation loss as metric
+        "--greater_is_better", "False",  # Lower eval_loss is better
         "--learning_rate", "1e-3",
         "--weight_decay", "0.0",
         "--warmup_ratio", "0.03",
