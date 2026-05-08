@@ -80,6 +80,18 @@ class P4Transformer(nn.Module):
         
                 
         if self.feature_mode == "all":
+            # print(output.shape)
+            # 1. Permute to [Batch, Features, Tokens] because Pool1d works on the last dim
+            output = output.permute(0, 2, 1) # [2, 1024, 1024]
+
+            # 2. Downsample Tokens from 1024 -> 64
+            output = F.adaptive_avg_pool1d(output, 64) # [2, 1024, 64]
+
+            # 3. Permute back to [Batch, Tokens, Features]
+            output = output.permute(0, 2, 1) # [2, 64, 1024]
+            # print(output.shape)
+            # output = torch.max(input=output, dim=1, keepdim=False, out=None)[0]
+            # output = output.unsqueeze(1)  # Add back sequence dimension for consistency
             return output
         
         output = torch.max(input=output, dim=1, keepdim=False, out=None)[0]

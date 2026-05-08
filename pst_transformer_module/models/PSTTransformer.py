@@ -96,6 +96,7 @@ class PSTTransformer(nn.Module):
         # print(f"After second spatial max pooling, output shape: {output.shape}")  # Debugging line
         
         if self.feature_mode == 'all':
+            # print(f"Output shape before projection: {output.shape}")  # Debugging line
             return output
         output = self.mlp_head(output)
         #output = F.normalize(output, dim=1)  ### Normalize unitsphere

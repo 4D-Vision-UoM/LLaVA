@@ -399,12 +399,36 @@ class MotionPointNet(nn.Module):
         output_dict = self.forward_cls_feat(xyz, shape, feats)
         output = None
         if not self.pretrain:
-            output = output_dict['temporal_features']
-            output = output.max(2)[0]  # temporal
-            output = output.permute(0, 2, 1)  # strictly only for llava training, we get multiple tokens, so we keep the token dimension and do not max pool spatially
-            # print(f"After temporal max pooling, output shape: {output.shape}")  # Debugging line
-            # output = output.max(2)[0]  # spatial
-            # print(f"After spatial max pooling, output shape: {output.shape}")  # Debugging line
+            # output = output_dict['temporal_features']
+            # print(f"Output shape before temporal pooling: {output.shape}")  # Debugging line
+            # output = output.max(2)[0]  # temporal
+            # output = output.permute(0, 2, 1)  # strictly only for llava training, we get multiple tokens, so we keep the token dimension and do not max pool spatially
+            # # print(f"After temporal max pooling, output shape: {output.shape}")  # Debugging line
+            # # output = output.max(2)[0]  # spatial
+            # # print(f"After spatial max pooling, output shape: {output.shape}")  # Debugging line
+            # # print(f"Final output shape before projection: {output.shape}")  # Debugging line
+            # print(f"Output shape after temporal pooling: {output.shape}")  # Debugging line
+            # 1. Start with your input: [32, 1024, 32, 4]
+            output = output_dict['temporal_features'] 
+
+            # 2. Reshape to combine the middle "token" dimensions 
+            # We move 1024 to the end and flatten (32 * 4) into 128 tokens
+            # Shape: [32, 128, 1024]
+            output = output.permute(0, 2, 3, 1).flatten(1, 2)
+
+            # 3. Swap to [Batch, Channels, Tokens] for the Pooling layer
+            # Shape: [32, 1024, 128]
+            output = output.permute(0, 2, 1)
+
+            # 4. Downsample tokens from 128 -> 64 
+            # This averages the spatial/temporal info into 64 representative "slots"
+            output = F.adaptive_avg_pool1d(output, 64) 
+
+            # 5. Permute back to your desired shape: [32, 64, 1024]
+            output = output.permute(0, 2, 1)
+
+            # print(f"Final shape: {output.shape}") # torch.Size([32, 64, 1024])  
+            
             motion_features = output
             
         if self.feature_mode == "all":
